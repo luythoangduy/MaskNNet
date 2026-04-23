@@ -31,6 +31,12 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
+On Windows / PowerShell you can also bootstrap a local virtual environment with:
+
+```powershell
+./scripts/setup_env.ps1
+```
+
 
 ## Quick Start
 Before we start, please make sure you have the rights to use [DINOv2](https://github.com/facebookresearch/dinov2) or [DINOv3](https://github.com/facebookresearch/dinov3). Download our trained manifold projectors, and put them to `./logs/`. 
@@ -60,6 +66,18 @@ python foundad/main.py mode=demo app=test testing.segmentation_vis=True data.dat
 | **MVTec AD** | Official site: [<u>Here</u>](https://www.mvtec.com/company/research/datasets/mvtec-ad) |
 | **VisA** | We use the structured dataset of [<u>RealNet</u>](https://github.com/cnulab/RealNet). |
 
+Helper scripts:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\download_mvtec.py
+.\.venv\Scripts\python.exe .\scripts\download_visa.py
+```
+
+By default they place archives under `data/raw/` and extracted datasets under:
+
+- `data/extracted/mvtec/mvtec`
+- `data/extracted/visa/visa`
+
 ### Few-Shot Sampling
 
 Create a **few-shot** subset with `sample.py`:
@@ -68,6 +86,13 @@ Create a **few-shot** subset with `sample.py`:
 python foundad/src/sample.py source=/media/ymxlzgy/Data21/xinyan/visa target=/media/ymxlzgy/Data21/xinyan/visa_tmp seed=42 num_samples=2
 ```
 where `source` is the dataset folder, `target` is the folder of few-shot samples, and `num_samples` is the number of samples training models, e.g., 2 for 2-shot learning. `seed` can be adjusted to have multiple rounds of experiment.
+
+Windows / PowerShell shortcuts:
+
+```powershell
+./scripts/sample_mvtec.ps1 -NumSamples 1 -Seed 42
+./scripts/sample_visa.ps1 -NumSamples 1 -Seed 42
+```
 
 ### Model Training
 
