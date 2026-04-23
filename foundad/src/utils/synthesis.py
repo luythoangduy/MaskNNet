@@ -4,6 +4,7 @@ import math
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torchvision.transforms as transforms
 import torchvision.transforms.functional as TF
 from skimage import morphology
@@ -255,3 +256,154 @@ class CutPasteUnion(object):
             augmented_imgs[i] = augmented.squeeze(0)
 
         return imgs, augmented_imgs
+
+
+class NeuralMaskSynthesizer(object):
+    def __init__(
+        self,
+        area_ratio=(0.02, 0.25),
+        aspect_ratio=0.3,
+        method="suppress",
+        radius=2,
+        pca_dim=5,
+        channel_topk_ratio=0.1,
+        channel_min=32,
+        mask_strength=1.0,
+    ):
+        self.area_ratio = area_ratio
+        self.aspect_ratio = aspect_ratio
+        self.method = method
+        self.radius = radius
+        self.pca_dim = pca_dim
+        self.channel_topk_ratio = channel_topk_ratio
+        self.channel_min = channel_min
+        self.mask_strength = mask_strength
+
+    def __call__(self, imgs: torch.Tensor, feats: torch.Tensor, subclasses):
+        batch_size, num_tokens, _ = feats.shape
+        grid_size = int(round(math.sqrt(num_tokens)))
+        if grid_size * grid_size != num_tokens:
+            raise ValueError(f"Expected square patch grid, got {num_tokens} tokens")
+
+        synth_feats = feats.clone()
+        synth_masks = torch.zeros(batch_size, num_tokens, device=feats.device, dtype=feats.dtype)
+
+        for i in range(batch_size):
+            feat_i, mask_i = self.process_sample(imgs[i], feats[i], subclasses[i], grid_size, grid_size)
+            synth_feats[i] = feat_i
+            synth_masks[i] = mask_i
+
+        return synth_feats, synth_masks
+
+    def process_sample(
+        self,
+        img: torch.Tensor,
+        feat: torch.Tensor,
+        subclass: str,
+        grid_h: int,
+        grid_w: int,
+    ):
+        target_foreground_mask = generate_target_foreground_mask(img, subclass)
+        patch_mask = self.mask_to_patch(target_foreground_mask, grid_h, grid_w).to(feat.device)
+        region_mask = self.sample_random_box(patch_mask)
+
+        if region_mask.sum() == 0:
+            return feat, torch.zeros(feat.shape[0], device=feat.device, dtype=feat.dtype)
+
+        feat_new = feat.clone()
+        token_mask = torch.zeros(feat.shape[0], device=feat.device, dtype=torch.bool)
+
+        region_indices = region_mask.reshape(-1).nonzero(as_tuple=False).flatten()
+        for token_idx in region_indices.tolist():
+            neigh_idx = self.get_spatial_neighbors(token_idx, grid_h, grid_w, self.radius)
+            local_feats = feat[neigh_idx]
+            if local_feats.shape[0] <= 1:
+                continue
+
+            proj, delta = self.project_to_local_manifold(local_feats, feat[token_idx])
+            decisive_dims = self.get_decisive_dims(delta)
+            if decisive_dims.numel() == 0:
+                continue
+
+            if self.method == "violate":
+                delta_norm = delta.norm().clamp_min(1e-6)
+                local_scale = local_feats.std(dim=0, unbiased=False).mean().clamp_min(1e-6)
+                masked_value = feat[token_idx, decisive_dims]
+                masked_value = masked_value + self.mask_strength * local_scale * (delta[decisive_dims] / delta_norm)
+            else:
+                masked_value = (1.0 - self.mask_strength) * feat[token_idx, decisive_dims]
+                masked_value = masked_value + self.mask_strength * proj[decisive_dims]
+            feat_new[token_idx, decisive_dims] = masked_value
+            token_mask[token_idx] = True
+
+        return feat_new, token_mask.float()
+
+    def sample_random_box(self, foreground_mask: torch.Tensor):
+        grid_h, grid_w = foreground_mask.shape
+        area = grid_h * grid_w
+        target_area = random.uniform(self.area_ratio[0], self.area_ratio[1]) * area
+        aspect_ratio = random.uniform(self.aspect_ratio, 1 / self.aspect_ratio)
+
+        box_w = int(round(math.sqrt(target_area * aspect_ratio)))
+        box_h = int(round(math.sqrt(target_area / aspect_ratio)))
+
+        box_w = min(max(box_w, 1), grid_w)
+        box_h = min(max(box_h, 1), grid_h)
+
+        valid_coords = []
+        ys, xs = torch.where(foreground_mask > 0)
+        for y, x in zip(ys.tolist(), xs.tolist()):
+            top = max(0, min(y - box_h // 2, grid_h - box_h))
+            left = max(0, min(x - box_w // 2, grid_w - box_w))
+            box = torch.zeros_like(foreground_mask, dtype=torch.bool)
+            box[top : top + box_h, left : left + box_w] = True
+            if (box & foreground_mask.bool()).any():
+                valid_coords.append((top, left))
+
+        if not valid_coords:
+            return torch.zeros_like(foreground_mask, dtype=torch.bool)
+
+        top, left = random.choice(valid_coords)
+        region_mask = torch.zeros_like(foreground_mask, dtype=torch.bool)
+        region_mask[top : top + box_h, left : left + box_w] = True
+        return region_mask & foreground_mask.bool()
+
+    @staticmethod
+    def mask_to_patch(mask: np.ndarray, grid_h: int, grid_w: int):
+        mask_tensor = torch.from_numpy(mask.astype(np.float32)).unsqueeze(0).unsqueeze(0)
+        mask_tensor = F.interpolate(mask_tensor, size=(grid_h, grid_w), mode="nearest")
+        return (mask_tensor.squeeze(0).squeeze(0) > 0.5)
+
+    @staticmethod
+    def get_spatial_neighbors(token_idx: int, grid_h: int, grid_w: int, radius: int):
+        y, x = divmod(token_idx, grid_w)
+        neigh = []
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                ny, nx = y + dy, x + dx
+                if 0 <= ny < grid_h and 0 <= nx < grid_w:
+                    neigh.append(ny * grid_w + nx)
+        return neigh
+
+    def project_to_local_manifold(self, local_feats: torch.Tensor, token_feat: torch.Tensor):
+        mu = local_feats.mean(dim=0, keepdim=True)
+        centered = local_feats - mu
+        q = min(self.pca_dim, centered.shape[0], centered.shape[1])
+
+        if q < 1:
+            return token_feat, torch.zeros_like(token_feat)
+
+        _, _, basis = torch.pca_lowrank(centered, q=q, center=False)
+        token_centered = token_feat - mu.squeeze(0)
+        coeff = token_centered @ basis
+        proj = coeff @ basis.transpose(0, 1) + mu.squeeze(0)
+        delta = token_feat - proj
+        return proj, delta
+
+    def get_decisive_dims(self, delta: torch.Tensor):
+        feat_dim = delta.numel()
+        k = max(self.channel_min, int(round(feat_dim * self.channel_topk_ratio)))
+        k = min(k, feat_dim)
+        if k <= 0:
+            return torch.empty(0, device=delta.device, dtype=torch.long)
+        return torch.topk(delta.abs(), k=k, largest=True).indices

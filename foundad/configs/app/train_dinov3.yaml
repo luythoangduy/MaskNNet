@@ -9,6 +9,18 @@ meta:
   n_layer: 3
   feat_normed: false
   loss_mode: 'l2'  # l2 or smooth_l1
+  synthesis_mode: 'neural_mask'  # neural_mask or cutpaste
+  synth_probability: 0.5
+  synthetic_weight: 2.0
+  synthesis:
+    area_ratio: [0.02, 0.25]
+    aspect_ratio: 0.3
+    method: 'suppress'  # suppress or violate
+    radius: 2
+    pca_dim: 5
+    channel_topk_ratio: 0.1
+    channel_min: 32
+    mask_strength: 1.0
 
 logging:
   folder: logs/${data.data_name}/${app.meta.model}${oc.select:diy_name,""}
