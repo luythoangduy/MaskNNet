@@ -27,6 +27,7 @@ class VisionModule(nn.Module):
         super().__init__()
         (self.encoder, self.num_patches, self.embed_dim, self.processor, self.projector) = self._build_encoder(model_name)
         self.model_name = model_name
+        self.predictor_embed_dim = pred_emb_dim
 
         self.predictor = vit.__dict__["vit_predictor"](num_patches=self.num_patches, embed_dim=self.embed_dim,
                                                          predictor_embed_dim=pred_emb_dim, depth=pred_depth, if_pe=if_pe, feat_normed=feat_normed)
@@ -35,7 +36,7 @@ class VisionModule(nn.Module):
         if use_cuda and torch.cuda.is_available():
             self.cuda()
         self.feat_normed = self.predictor.feat_normed # it depends on the predictor
-        print(f"Normed features: {self.feat_normed}")
+        print(f"Encoder dim: {self.embed_dim} | Predictor dim: {self.predictor_embed_dim} | Normed features: {self.feat_normed}")
 
     def predict(self, z: torch.Tensor) -> torch.Tensor:
         return self.predictor(z)

@@ -1,6 +1,6 @@
 # @package app
 
-model_name: dinov3
+model_name: dinov2
 ckpt_step: ''
 
 logging:
