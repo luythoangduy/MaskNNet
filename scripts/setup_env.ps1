@@ -19,7 +19,7 @@ Write-Host "[3/5] Install PyTorch"
 if ($CpuOnly) {
     & $VenvPip install torch torchvision torchaudio
 } else {
-    & $VenvPip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+    & $VenvPip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128
 }
 
 Write-Host "[4/5] Install project dependencies"

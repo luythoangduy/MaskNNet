@@ -112,6 +112,7 @@ setup.cfg
 
 # Large data dirs
 data/
+third_party/
 results/
 outputs/
 logs/

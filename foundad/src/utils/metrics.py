@@ -1,6 +1,8 @@
 import numpy as np
+import torch
 from sklearn import metrics
 from skimage.measure import label, regionprops
+from torchmetrics.functional.classification import binary_auroc, binary_average_precision
 
 
 def compute_imagewise_retrieval_metrics(
@@ -87,6 +89,35 @@ def compute_pixelwise_retrieval_metrics(
         "pr_thresholds": pr_thresholds,
         "f1_max": f1_max,
         "f1_max_threshold": f1_max_threshold
+    }
+
+
+def compute_pixelwise_retrieval_metrics_torch(
+    anomaly_segmentations,
+    ground_truth_masks,
+    device="cuda",
+):
+    scores = anomaly_segmentations.flatten().to(device=device, dtype=torch.float32)
+    labels = ground_truth_masks.flatten().to(device=device)
+    labels = (labels > 0).to(torch.int)
+
+    if labels.unique().numel() < 2:
+        raise ValueError("Only one class present in y_true. ROC AUC score is not defined in that case.")
+
+    auroc = binary_auroc(scores, labels).item()
+    aupr = binary_average_precision(scores, labels).item()
+
+    return {
+        "auroc": auroc,
+        "fpr": None,
+        "tpr": None,
+        "roc_thresholds": None,
+        "aupr": aupr,
+        "precision": None,
+        "recall": None,
+        "pr_thresholds": None,
+        "f1_max": None,
+        "f1_max_threshold": None,
     }
 
 

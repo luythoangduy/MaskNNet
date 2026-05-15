@@ -1,6 +1,11 @@
 # @package app
 meta:
   model: 'dinov3'
+  dinov3_source: 'hf'  # hf or torchhub
+  dinov3_hf_model: 'facebook/dinov3-vitb16-pretrain-lvd1689m'
+  dinov3_hub_model: 'dinov3_vitb16'
+  dinov3_repo: ''
+  dinov3_weights: ''
   crop_size: 512
   pred_depth: 6
   pred_emb_dim: 384

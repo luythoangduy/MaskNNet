@@ -8,12 +8,14 @@ import torch
 import torch.nn.functional as F
 from matplotlib import cm, pyplot as plt
 from PIL import Image
+from tqdm.auto import tqdm
 
 from src.datasets.dataset import build_dataloader
 from src.utils.metrics import (
     calculate_pro,
     compute_imagewise_retrieval_metrics,
     compute_pixelwise_retrieval_metrics,
+    compute_pixelwise_retrieval_metrics_torch,
 )
 from src.helper import save_segmentation_grid
 from src.utils.logging import CSVLogger
@@ -30,6 +32,7 @@ def _build_model(meta: Dict[str, Any]) -> VisionModule:
         pred_emb_dim=meta["pred_emb_dim"],
         if_pe=meta.get("if_pred_pe", True),
         feat_normed=meta.get("feat_normed", False),
+        encoder_cfg=meta,
     )
 
 @torch.inference_mode()
@@ -77,26 +80,27 @@ def _evaluate_single_ckpt(ckpt: Path, cfg: Dict[str, Any]) -> None:
 
     mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1,3,1,1)
     std  = torch.tensor([0.229, 0.224, 0.225], device=device).view(1,3,1,1)
+    eval_batch_size = int(cfg["data"].get("batch_size", 1))
 
-    for cls in classnames:
+    for cls in tqdm(classnames, desc="Classes", unit="class"):
         _, loader, _ = build_dataloader(
             mode="test",
             root=cfg["data"]["test_root"],
-            batch_size=1,
+            batch_size=eval_batch_size,
             classname=cls,
             resize=crop,
             datasetname=dataset_name,
         )
 
-        print(f"Evaluating {cls}...")
-
         patch_scores, labels = [], []
         pix_buf, img_buf, mask_buf, name_buf = [], [], [], []
 
-        for batch in loader:
+        for batch in tqdm(loader, desc=f"Evaluating {cls}", unit="img", leave=False):
             img = batch["image"].to(device, non_blocking=True)
             mask = batch["mask"].to(device, non_blocking=True)
-            paths = batch["image_path"]; labels.extend(batch["is_anomaly"]); name_buf.extend(batch["image_name"])
+            paths = batch["image_path"]
+            labels.extend(batch["is_anomaly"].cpu().tolist())
+            name_buf.extend(batch["image_name"])
 
             enc = model.target_features(img, paths, n_layer=n_layer)
             pred = model.predict(enc)
@@ -104,7 +108,7 @@ def _evaluate_single_ckpt(ckpt: Path, cfg: Dict[str, Any]) -> None:
             l = F.mse_loss(enc, pred, reduction="none").mean(dim=2)
 
             topk = torch.topk(l, K, dim=1).values.mean(dim=1)
-            patch_scores.extend(topk.cpu())
+            patch_scores.extend(topk.cpu().tolist())
             h = w = int(math.sqrt(l.size(1)))
             pix = F.interpolate(l.view(-1,1,h,w), size=img.shape[2:], mode="bilinear", align_corners=False)
             pix_buf.append(pix.squeeze(1).cpu()); img_buf.append(img.cpu()); mask_buf.append(mask.cpu())
@@ -114,13 +118,33 @@ def _evaluate_single_ckpt(ckpt: Path, cfg: Dict[str, Any]) -> None:
 
         pix_all = torch.cat(pix_buf)
         gmin, gmax = pix_all.min(), pix_all.max()
-        pix_norm = ((pix_all - gmin) / (gmax - gmin + 1e-8)).numpy()
-        mask_np  = torch.cat(mask_buf).squeeze(1).numpy()
+        pix_norm = (pix_all - gmin) / (gmax - gmin + 1e-8)
+        mask_all = torch.cat(mask_buf).squeeze(1)
 
         inst = compute_imagewise_retrieval_metrics(p_np, np.array(labels))
-        pix  = compute_pixelwise_retrieval_metrics(pix_norm, mask_np)
-        pro  = calculate_pro(mask_np, pix_norm,
-                             max_steps=cfg["testing"]["max_steps"], expect_fpr=cfg["testing"]["expect_fpr"])
+        pixel_metric_device = cfg["testing"].get("pixel_metric_device", "cuda")
+        if pixel_metric_device == "cuda" and torch.cuda.is_available():
+            pix = compute_pixelwise_retrieval_metrics_torch(pix_norm, mask_all, device=device)
+        else:
+            pix = compute_pixelwise_retrieval_metrics(pix_norm.numpy(), mask_all.numpy())
+
+        needs_numpy_maps = (
+            cfg["testing"].get("compute_pro", True)
+            or cfg["testing"].get("segmentation_vis", False)
+        )
+        if needs_numpy_maps:
+            pix_norm_np = pix_norm.numpy()
+            mask_np = mask_all.numpy()
+
+        if cfg["testing"].get("compute_pro", True):
+            pro = calculate_pro(
+                mask_np,
+                pix_norm_np,
+                max_steps=cfg["testing"]["max_steps"],
+                expect_fpr=cfg["testing"]["expect_fpr"],
+            )
+        else:
+            pro = float("nan")
 
         logger.info("%s | AUROC_i %.4f | AUPR_i %.4f | AUROC_p %.4f | PRO-AUC %.4f",
                     cls, inst["auroc"], inst["aupr"], pix["auroc"], pro)
@@ -134,7 +158,7 @@ def _evaluate_single_ckpt(ckpt: Path, cfg: Dict[str, Any]) -> None:
             std_cpu, mean_cpu = std.cpu(), mean.cpu()
             imgs_un = (torch.cat(img_buf) * std_cpu + mean_cpu).permute(0,2,3,1).numpy()
             out_dir = Path(cfg["logging"]["folder"]) / "segmentation" / cls
-            save_segmentation_grid(out_dir, name_buf, imgs_un, mask_np, pix_norm)
+            save_segmentation_grid(out_dir, name_buf, imgs_un, mask_np, pix_norm_np)
 
     logger.info("Mean | AUROC_i %.4f | AUPR_i %.4f | AUROC_p %.4f | PRO-AUC %.4f",
                 np.mean(inst_auc), np.mean(inst_aupr), np.mean(pix_auc), np.mean(pro_auc))

@@ -1,4 +1,5 @@
 
+import os
 import multiprocessing as mp
 from typing import Any, Dict, Tuple, Optional, List
 import importlib   
@@ -9,7 +10,7 @@ import torch.nn.functional as F
 from src.utils.tensors import trunc_normal_
 from src.datasets.dataset import build_dataloader
 import src.dinov2.models.vision_transformer as vit
-from transformers import AutoProcessor, SiglipVisionModel, CLIPVisionModel
+from transformers import AutoModel, AutoProcessor, SiglipVisionModel, CLIPVisionModel
 
 
 
@@ -22,9 +23,44 @@ class LinearProjector(torch.nn.Module):
         return self.projector(img_patches)
 
 
-class VisionModule(nn.Module):
-    def __init__(self, model_name: str, pred_depth: int, pred_emb_dim: int, use_cuda: bool = True, if_pe: bool = True, feat_normed: bool = False):
+class HFDinoV3Backbone(nn.Module):
+    def __init__(self, model_id: str) -> None:
         super().__init__()
+        self.model = AutoModel.from_pretrained(model_id).eval()
+        self.embed_dim = getattr(self.model.config, "hidden_size", None)
+        if self.embed_dim is None:
+            raise ValueError(f"Could not infer hidden_size from Hugging Face model config: {model_id}")
+
+    def forward(self, *args, **kwargs):
+        return self.model(*args, **kwargs)
+
+    def get_intermediate_layers(self, imgs, n=3, return_class_token=False):
+        out = self.model(pixel_values=imgs, output_hidden_states=True, return_dict=True)
+        hidden_states = out.hidden_states
+        if hidden_states is None:
+            raise RuntimeError("DINOv3 Hugging Face model did not return hidden_states.")
+        layer_idx = max(1, min(int(n), len(hidden_states) - 1))
+        h = hidden_states[-layer_idx]
+        class_token = h[:, 0]
+        patch_tokens = h[:, 1:]
+        if return_class_token:
+            return ((patch_tokens, class_token),)
+        return (patch_tokens,)
+
+
+class VisionModule(nn.Module):
+    def __init__(
+        self,
+        model_name: str,
+        pred_depth: int,
+        pred_emb_dim: int,
+        use_cuda: bool = True,
+        if_pe: bool = True,
+        feat_normed: bool = False,
+        encoder_cfg: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__()
+        self.encoder_cfg = encoder_cfg or {}
         (self.encoder, self.num_patches, self.embed_dim, self.processor, self.projector) = self._build_encoder(model_name)
         self.model_name = model_name
         self.predictor_embed_dim = pred_emb_dim
@@ -56,8 +92,43 @@ class VisionModule(nn.Module):
         if model == "dinov2":
             enc = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14").eval(); num_patches, embed_dim = enc.patch_embed.num_patches, enc.embed_dim
         elif model == "dinov3":
-            enc = torch.hub.load("facebookresearch/dinov3", 'dinov3_vitb16', source="github").eval()
-            num_patches, embed_dim = enc.patch_embed.num_patches, enc.embed_dim
+            source = self.encoder_cfg.get("dinov3_source") or os.environ.get("DINOV3_SOURCE", "hf")
+            hub_model = self.encoder_cfg.get("dinov3_hub_model") or os.environ.get("DINOV3_HUB_MODEL", "dinov3_vitb16")
+            hf_model = self.encoder_cfg.get("dinov3_hf_model") or os.environ.get(
+                "DINOV3_HF_MODEL",
+                "facebook/dinov3-vitb16-pretrain-lvd1689m",
+            )
+            repo = self.encoder_cfg.get("dinov3_repo") or os.environ.get("DINOV3_REPO", "")
+            weights = self.encoder_cfg.get("dinov3_weights") or os.environ.get("DINOV3_WEIGHTS", "")
+
+            if source == "hf":
+                enc = HFDinoV3Backbone(hf_model).eval()
+            elif repo and weights:
+                enc = torch.hub.load(repo, hub_model, source="local", weights=weights).eval()
+            elif repo:
+                enc = torch.hub.load(repo, hub_model, source="local").eval()
+            elif weights:
+                enc = torch.hub.load(
+                    "facebookresearch/dinov3",
+                    hub_model,
+                    source="github",
+                    weights=weights,
+                    trust_repo=True,
+                ).eval()
+            else:
+                enc = torch.hub.load(
+                    "facebookresearch/dinov3",
+                    hub_model,
+                    source="github",
+                    trust_repo=True,
+                ).eval()
+            if isinstance(enc, HFDinoV3Backbone):
+                crop_size = int(self.encoder_cfg.get("crop_size", 512))
+                patch_size = int(getattr(enc.model.config, "patch_size", 16))
+                num_patches = (crop_size // patch_size) ** 2
+                embed_dim = enc.embed_dim
+            else:
+                num_patches, embed_dim = enc.patch_embed.num_patches, enc.embed_dim
         elif model == "dino":
             enc = torch.hub.load("facebookresearch/dino:main", "dino_vitb16").eval(); num_patches, embed_dim = 1024, enc.embed_dim
         elif model == "siglip":

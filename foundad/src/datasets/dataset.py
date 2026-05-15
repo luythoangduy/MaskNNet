@@ -225,6 +225,7 @@ class TestDataset(Dataset):
         if mask_path is not None:
             mask = PIL.Image.open(mask_path).convert("L")
             mask = self.transform_mask(mask)
+            mask = (mask > 0).float()
         else:
             mask = torch.zeros([1, *image.size()[1:]])
 

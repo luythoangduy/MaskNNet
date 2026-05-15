@@ -15,12 +15,12 @@ uv venv .venv --python 3.10
 
 PYTHON="$ROOT_DIR/.venv/bin/python"
 
-echo "Installing PyTorch CUDA 11.8 packages..."
+echo "Installing PyTorch CUDA 12.8 packages..."
 uv pip install --python "$PYTHON" \
-  torch==2.2.0 \
-  torchvision==0.17.0 \
-  torchaudio==2.2.0 \
-  --index-url https://download.pytorch.org/whl/cu118
+  torch==2.7.0 \
+  torchvision==0.22.0 \
+  torchaudio==2.7.0 \
+  --index-url https://download.pytorch.org/whl/cu128
 
 echo "Installing project requirements..."
 uv pip install --python "$PYTHON" -r requirements.txt
@@ -46,6 +46,7 @@ print("torchvision", torchvision.__version__)
 print("numpy", numpy.__version__)
 print("cuda_available", torch.cuda.is_available())
 print("cuda_version", torch.version.cuda)
+print("cuda_arch_list", torch.cuda.get_arch_list() if torch.cuda.is_available() else [])
 print("device", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu")
 PY
 

@@ -72,7 +72,9 @@ testing:
   K_top_visa: 6         
   expect_fpr: 0.3     
   max_steps: 200      
-  segmentation_vis: True
+  compute_pro: True
+  pixel_metric_device: cuda
+  segmentation_vis: False
 
 devices: [cuda:0]
 
