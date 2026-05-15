@@ -12,6 +12,22 @@ meta:
   synthesis_mode: 'neural_mask'  # neural_mask or cutpaste
   synth_probability: 0.5
   synthetic_weight: 2.0
+  use_channel_routing: false
+  channel_topk: 32
+  channel_score_momentum: 0.9
+  use_channel_ema: true
+  use_channel_stability: false
+  use_masked_channel_reliability: true
+  feature_synth_mode: 'mixed'  # dropout, noise, replacement, shuffle, mixed
+  feature_synth_alpha: 1.0
+  token_mask_mode: 'rectangle'  # rectangle, random_blob, random_tokens
+  token_mask_min_ratio: 0.05
+  token_mask_max_ratio: 0.25
+  use_channel_weighted_loss: false
+  lambda_selected: 1.0
+  lambda_background_preservation: 0.0
+  lambda_delta_contrastive: 0.0
+  delta_contrastive_temperature: 0.2
   synthesis:
     area_ratio: [0.02, 0.25]
     aspect_ratio: 0.3
